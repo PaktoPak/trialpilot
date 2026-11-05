@@ -173,7 +173,7 @@ export function buildCommand(spec: VersionSpec, info: VideoInfo, io: { input: st
   if (look.contrast !== undefined && look.contrast !== 1) chain.push(`eq=contrast=${n(look.contrast)}`);
   if (look.temperature !== undefined && look.temperature !== NEUTRAL_TEMPERATURE) chain.push(`colortemperature=temperature=${Math.round(look.temperature)}`);
   if (look.grain) chain.push(`noise=alls=${Math.round(look.grain)}:allf=t+u`);
-  if (look.vignette) chain.push("vignette=PI/5");
+  if (look.vignette) chain.push("vignette=PI/7");
   // Mirroring comes before the hook is drawn, so the hook's text still reads the right way round.
   if (spec.mirror) chain.push("hflip");
   // Speed comes before the hook too, so the hook's seconds are seconds of the finished video.
@@ -232,15 +232,22 @@ export function checkOutput(out: VideoInfo, plan: RenderPlan): string[] {
   return problems;
 }
 
-/** A row of frames from the video: three from the opening, where the hook is, then three spread over the rest. */
+/**
+ * Six moments for a strip: three from the opening, where the hook is, then three spread over the
+ * rest. Short videos get six evenly spaced ones. Every strip has six frames, so strips line up.
+ */
+export function stripTimes(duration: number): number[] {
+  if (duration < 8) return [0, 1, 2, 3, 4, 5].map((i) => (duration * (i + 0.5)) / 6);
+  return [0.5, 1.5, 3, ...[0, 1, 2].map((i) => 5 + (i * (duration - 5.3)) / 2)];
+}
+
+/** A row of frames from the video, for reviewing versions side by side. */
 export async function makeStrip(tools: FfmpegTools, video: string, duration: number, file: string): Promise<void> {
-  const candidates = [0.5, 2, 3.5, duration * 0.4, duration * 0.7, duration - 0.3].filter((t) => t >= 0 && t < duration - 0.1).sort((x, y) => x - y);
-  const times = candidates.filter((t, i) => i === 0 || t - candidates[i - 1] >= 0.4);
-  if (!times.length) times.push(0);
+  const times = stripTimes(duration);
   const args = ["-hide_banner", "-loglevel", "error", "-y"];
   for (const t of times) args.push("-ss", n(t), "-i", video);
   const scaled = times.map((_, i) => `[${i}:v]scale=-2:360,setsar=1[f${i}]`);
-  const joined = times.length > 1 ? `${times.map((_, i) => `[f${i}]`).join("")}hstack=inputs=${times.length}[strip]` : "[f0]null[strip]";
+  const joined = `${times.map((_, i) => `[f${i}]`).join("")}hstack=inputs=${times.length}[strip]`;
   args.push("-filter_complex", [...scaled, joined].join(";"), "-map", "[strip]", "-frames:v", "1", "-q:v", "4", file);
   await runTool(tools.ffmpeg, args, 120_000);
 }

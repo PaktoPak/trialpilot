@@ -12,7 +12,7 @@ process.env.TRIALPILOT_DATA_DIR = dataDir;
 const ownFfmpeg = path.join(os.homedir(), "Trialpilot", "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
 if (!process.env.TRIALPILOT_FFMPEG_PATH && fs.existsSync(ownFfmpeg)) process.env.TRIALPILOT_FFMPEG_PATH = ownFfmpeg;
 
-const { buildCommand, checkOutput, describeSpec, makeVersions, outputSize, validateSpec, VersionError } = await import("../dist/video/versions.js");
+const { buildCommand, checkOutput, describeSpec, makeVersions, outputSize, stripTimes, validateSpec, VersionError } = await import("../dist/video/versions.js");
 const { probe, resolveFfmpeg } = await import("../dist/ffmpeg.js");
 const { resolveBrowser } = await import("../dist/browser.js");
 
@@ -88,6 +88,15 @@ test("changes are described in plain words", () => {
   assert.equal(describeSpec({ speed: 1.05, zoom: 1.03 }), "1.05× speed, 3% zoom, top kept in place");
   assert.equal(describeSpec({ look: { temperature: 5500, vignette: true } }), "warmer colour (5500 K), vignette");
   assert.equal(describeSpec({}), "no changes");
+});
+
+test("every strip has six frames, starting in the opening", () => {
+  for (const duration of [3, 5.7, 6, 8, 30, 180]) {
+    const times = stripTimes(duration);
+    assert.equal(times.length, 6);
+    assert.ok(times.every((t, i) => t >= 0 && t < duration && (i === 0 || t > times[i - 1])), `${duration} s: ${times}`);
+    assert.ok(times[1] <= 1.5);
+  }
 });
 
 test("checkOutput flags files Instagram would reject", () => {

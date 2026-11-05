@@ -18,7 +18,7 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><style>
 html, body { margin: 0; background: transparent; }
 body { width: 100vw; height: 100vh; position: relative; overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
-#hook { position: absolute; left: 7%; right: 7%; text-align: center; font-weight: 800; line-height: 1.3; white-space: pre-line; overflow-wrap: anywhere; }
+#hook { position: absolute; left: 7%; right: 7%; text-align: center; font-weight: 800; line-height: 1.3; white-space: pre-line; text-wrap: balance; overflow-wrap: anywhere; }
 #hook.top { top: 14%; }
 #hook.middle { top: 45%; transform: translateY(-50%); }
 #hook.bottom { bottom: 33%; }
@@ -43,9 +43,10 @@ export async function renderHookImages(images: HookImage[]): Promise<void> {
       await page.evaluate(({ text, style, position, width, height }) => {
         const hook = document.getElementById("hook")!;
         hook.className = `${style} ${position}`;
-        hook.querySelector("span")!.textContent = text;
+        // An emoji never wraps onto a line of its own.
+        hook.querySelector("span")!.textContent = text.replace(/ (?=\p{Extended_Pictographic})/gu, " ");
         // Long lines shrink until the block fits in under a third of the frame.
-        let size = width * 0.064;
+        let size = width * 0.075;
         hook.style.fontSize = `${size}px`;
         while (size > width * 0.03 && hook.getBoundingClientRect().height > height * 0.3) {
           size *= 0.92;
