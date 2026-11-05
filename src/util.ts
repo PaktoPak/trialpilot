@@ -35,6 +35,20 @@ export async function writeJsonAtomic(file: string, data: unknown): Promise<void
   }
 }
 
+/** Runs fn over items with at most limit running at once, keeping the results in order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
 export const normalizeUsername = (u: string) => u.trim().replace(/^@/, "").toLowerCase();
 
 export function errorMessage(e: unknown): string {

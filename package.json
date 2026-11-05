@@ -4,7 +4,8 @@
   "description": "Test several versions of a video as Instagram trial reels from Claude Desktop.",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
