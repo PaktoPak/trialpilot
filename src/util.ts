@@ -49,7 +49,14 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, in
   return results;
 }
 
+export function localTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 export const normalizeUsername = (u: string) => u.trim().replace(/^@/, "").toLowerCase();
+
+/** A problem with what was asked for, worded for the user. */
+export class UserError extends Error {}
 
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

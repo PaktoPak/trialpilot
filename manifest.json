@@ -1,0 +1,102 @@
+{
+  "manifest_version": "0.3",
+  "name": "trialpilot",
+  "display_name": "Trialpilot",
+  "version": "0.1.0",
+  "description": "Test a few versions of a video as Instagram trial reels from Claude.",
+  "long_description": "Trialpilot turns one video into a few lightly edited versions (a new hook line, a different opening, speed, zoom, look or sound) and shows you a strip of frames from each. Accounts sign in once each in their own browser window, and everything stays on your computer. Posting the versions as trial reels and comparing how they did is still being built. Trialpilot works through instagram.com rather than an official Instagram API.",
+  "author": {
+    "name": "Trialpilot contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "instagram",
+    "trial reels",
+    "video",
+    "testing"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
+      "env": {
+        "TRIALPILOT_DATA_DIR": "${user_config.data_dir}",
+        "TRIALPILOT_FFMPEG_PATH": "${user_config.ffmpeg_path}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "connect_account",
+      "description": "Open a sign-in window to connect an Instagram account."
+    },
+    {
+      "name": "check_connection",
+      "description": "Check whether the user finished signing in."
+    },
+    {
+      "name": "list_accounts",
+      "description": "List connected accounts and their sign-in status."
+    },
+    {
+      "name": "check_account",
+      "description": "Confirm one account, or all of them, is still signed in."
+    },
+    {
+      "name": "disconnect_account",
+      "description": "Remove an account's saved sign-in."
+    },
+    {
+      "name": "list_videos",
+      "description": "List the videos and music in the videos folder."
+    },
+    {
+      "name": "make_versions",
+      "description": "Make up to 5 lightly edited versions of one video."
+    },
+    {
+      "name": "get_versions",
+      "description": "See each version's strip of frames and what it changes."
+    },
+    {
+      "name": "get_setup_status",
+      "description": "Show Trialpilot's folders, browser and FFmpeg."
+    },
+    {
+      "name": "install_ffmpeg",
+      "description": "Download FFmpeg, after your OK."
+    },
+    {
+      "name": "install_browser",
+      "description": "Download Chromium when no Chrome or Edge is installed."
+    }
+  ],
+  "user_config": {
+    "data_dir": {
+      "type": "directory",
+      "title": "Data folder",
+      "description": "Where Trialpilot keeps sign-ins, videos, versions and its records.",
+      "default": "${HOME}/Trialpilot",
+      "required": false
+    },
+    "ffmpeg_path": {
+      "type": "file",
+      "title": "FFmpeg",
+      "description": "Only if you want Trialpilot to use an FFmpeg you installed yourself. ffprobe has to be in the same folder.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32"
+    ],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

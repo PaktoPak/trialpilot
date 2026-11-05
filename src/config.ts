@@ -14,6 +14,8 @@ export const paths = {
   data: DATA_DIR,
   profiles: path.join(DATA_DIR, "profiles"),
   state: path.join(DATA_DIR, "state"),
+  // Where the user can drop the videos and music to make versions from.
+  videos: path.join(DATA_DIR, "videos"),
   // FFmpeg downloaded with the user's OK lives here; it's GPL, so it is never bundled with Trialpilot.
   bin: path.join(DATA_DIR, "bin"),
   versions: path.join(DATA_DIR, "versions"),

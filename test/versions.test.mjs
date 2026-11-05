@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { makeSource } from "./helpers.mjs";
 
 // Config is read on import, so the data folder has to be set first. FFmpeg comes from the
 // developer's own Trialpilot folder when there is one.
@@ -107,16 +108,6 @@ test("checkOutput flags files Instagram would reject", () => {
   assert.match(checkOutput({ ...info, width: 2160, height: 3840 }, plan).join(), /bigger than 1080×1920/);
 });
 
-// A grey 6-second clip with a tone, and a second tone as a music track.
-function makeSource(dir) {
-  const source = path.join(dir, "source.mp4");
-  const track = path.join(dir, "track.m4a");
-  execFileSync(tools.ffmpeg, ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=540x960:r=30:d=6", "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
-    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source]);
-  execFileSync(tools.ffmpeg, ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=10", "-c:a", "aac", track]);
-  return { source, track };
-}
-
 /** How much a region of one frame differs between two videos at the same moment, 0 to 255. */
 function regionDifference(a, b, t, crop) {
   const out = execFileSync(tools.ffmpeg, ["-v", "error", "-ss", String(t), "-i", a, "-ss", String(t), "-i", b,
@@ -132,7 +123,7 @@ function regionColour(video, t, crop) {
 
 test("renders versions that Instagram accepts, with a strip of frames each", { skip: canRender }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trialpilot-media-"));
-  const { source, track } = makeSource(dir);
+  const { source, track } = makeSource(tools.ffmpeg, dir);
   const set = await makeVersions(source, [
     { hook: { text: "Wait for the end 👀", position: "top", style: "box" } },
     { speed: 1.1, zoom: 1.04 },
@@ -168,6 +159,6 @@ test("renders versions that Instagram accepts, with a strip of frames each", { s
 
 test("refuses a version that repeats an earlier one", { skip: canRender }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trialpilot-media-"));
-  const { source } = makeSource(dir);
+  const { source } = makeSource(tools.ffmpeg, dir);
   await assert.rejects(makeVersions(source, [{ speed: 1.05 }, { speed: 1.05 }], { preset: "ultrafast" }), /same as an earlier one/);
 });

@@ -2,11 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { paths } from "../config.js";
 import { hasAudioTrack, probe, requireFfmpeg, runTool, type FfmpegTools, type VideoInfo } from "../ffmpeg.js";
-import { ensureDir, mapLimit, newId, writeJsonAtomic } from "../util.js";
+import { ensureDir, errorMessage, mapLimit, newId, readJson, UserError, writeJsonAtomic } from "../util.js";
 import { renderHookImages, type HookImage, type HookPosition, type HookStyle } from "./hook.js";
 
-/** A problem with what was asked for, worded for the user. */
-export class VersionError extends Error {}
+export class VersionError extends UserError {}
 
 /**
  * One edited version of the source video. Each version should change one thing compared with the
@@ -266,18 +265,28 @@ export interface Version {
 
 export interface VersionSet {
   id: string;
+  status: "rendering" | "ready" | "failed";
   source: string;
   source_info: VideoInfo;
+  specs: VersionSpec[];
   folder: string;
   original_strip: string;
   created_at: string;
+  finished_at?: string;
+  error?: string;
   versions: Version[];
 }
 
 const round = (x: number, digits = 1) => Math.round(x * 10 ** digits) / 10 ** digits;
+const setFile = (folder: string) => path.join(folder, "set.json");
 
-/** Renders each version of the source into its own folder, checks every file, and saves a strip of frames per version. */
-export async function makeVersions(source: string, specs: VersionSpec[], opts: { preset?: string; parallel?: number } = {}): Promise<VersionSet> {
+// Sets this process is rendering, with how many of their versions are done.
+const rendering = new Map<string, number>();
+
+export const versionsDone = (id: string): number | undefined => rendering.get(id);
+
+/** Checks the source and every version, then saves the set as rendering. The checks take seconds; rendering takes longer. */
+export async function prepareVersions(source: string, specs: VersionSpec[]): Promise<VersionSet> {
   check(specs.length >= 1 && specs.length <= LIMITS.versions, `Make between 1 and ${LIMITS.versions} versions at a time.`);
   const tools = requireFfmpeg();
   const sourcePath = path.resolve(source);
@@ -301,30 +310,74 @@ export async function makeVersions(source: string, specs: VersionSpec[], opts: {
   const id = newId("set");
   const folder = path.join(paths.versions, id);
   await ensureDir(folder);
-  const size = outputSize(info.width, info.height);
-  const hookFile = (i: number) => path.join(folder, `v${i + 1}-hook.png`);
-  const hooks: HookImage[] = specs.flatMap((spec, i) =>
-    spec.hook ? [{ text: spec.hook.text, style: spec.hook.style ?? "box", position: spec.hook.position ?? "top", ...size, file: hookFile(i) }] : [],
-  );
-  await renderHookImages(hooks);
-  const originalStrip = path.join(folder, "original-strip.jpg");
-  await makeStrip(tools, sourcePath, info.duration, originalStrip);
-
-  // libx264 already uses every core, so two at a time is enough.
-  const versions = await mapLimit(specs, opts.parallel ?? 2, async (spec, i): Promise<Version> => {
-    const vid = `v${i + 1}`;
-    const file = path.join(folder, `${vid}.mp4`);
-    const plan = buildCommand(spec, info, { input: sourcePath, output: file, hookImage: spec.hook ? hookFile(i) : undefined, preset: opts.preset });
-    await runTool(tools.ffmpeg, plan.args);
-    const out = await probe(tools, file);
-    const problems = checkOutput(out, plan);
-    if (problems.length) throw new Error(`${vid} came out wrong: ${problems.join("; ")}.`);
-    const strip = path.join(folder, `${vid}-strip.jpg`);
-    await makeStrip(tools, file, out.duration, strip);
-    return { id: vid, spec, changes: describeSpec(spec), file, strip, duration: round(out.duration), width: out.width, height: out.height, size_mb: round(out.size_bytes / 1e6) };
-  });
-
-  const set: VersionSet = { id, source: sourcePath, source_info: info, folder, original_strip: originalStrip, created_at: new Date().toISOString(), versions };
-  await writeJsonAtomic(path.join(folder, "set.json"), set);
+  const set: VersionSet = {
+    id, status: "rendering", source: sourcePath, source_info: info, specs, folder,
+    original_strip: path.join(folder, "original-strip.jpg"), created_at: new Date().toISOString(), versions: [],
+  };
+  await writeJsonAtomic(setFile(folder), set);
   return set;
+}
+
+/** Renders each version of a prepared set, checks every file, and saves a strip of frames per version. */
+export async function renderVersions(set: VersionSet, opts: { preset?: string; parallel?: number } = {}): Promise<VersionSet> {
+  rendering.set(set.id, 0);
+  try {
+    const tools = requireFfmpeg();
+    const { folder, specs, source_info: info } = set;
+    const size = outputSize(info.width, info.height);
+    const hookFile = (i: number) => path.join(folder, `v${i + 1}-hook.png`);
+    const hooks: HookImage[] = specs.flatMap((spec, i) =>
+      spec.hook ? [{ text: spec.hook.text, style: spec.hook.style ?? "box", position: spec.hook.position ?? "top", ...size, file: hookFile(i) }] : [],
+    );
+    await renderHookImages(hooks);
+    await makeStrip(tools, set.source, info.duration, set.original_strip);
+
+    // libx264 already uses every core, so two at a time is enough.
+    const versions = await mapLimit(specs, opts.parallel ?? 2, async (spec, i): Promise<Version> => {
+      const vid = `v${i + 1}`;
+      const file = path.join(folder, `${vid}.mp4`);
+      const plan = buildCommand(spec, info, { input: set.source, output: file, hookImage: spec.hook ? hookFile(i) : undefined, preset: opts.preset });
+      await runTool(tools.ffmpeg, plan.args);
+      const out = await probe(tools, file);
+      const problems = checkOutput(out, plan);
+      if (problems.length) throw new Error(`${vid} came out wrong: ${problems.join("; ")}.`);
+      const strip = path.join(folder, `${vid}-strip.jpg`);
+      await makeStrip(tools, file, out.duration, strip);
+      rendering.set(set.id, (rendering.get(set.id) ?? 0) + 1);
+      return { id: vid, spec, changes: describeSpec(spec), file, strip, duration: round(out.duration), width: out.width, height: out.height, size_mb: round(out.size_bytes / 1e6) };
+    });
+
+    const ready: VersionSet = { ...set, status: "ready", versions, finished_at: new Date().toISOString() };
+    await writeJsonAtomic(setFile(folder), ready);
+    return ready;
+  } catch (e) {
+    await writeJsonAtomic(setFile(set.folder), { ...set, status: "failed", error: errorMessage(e), finished_at: new Date().toISOString() }).catch(() => {});
+    throw e;
+  } finally {
+    rendering.delete(set.id);
+  }
+}
+
+export async function makeVersions(source: string, specs: VersionSpec[], opts: { preset?: string; parallel?: number } = {}): Promise<VersionSet> {
+  return renderVersions(await prepareVersions(source, specs), opts);
+}
+
+/** A saved set. One still marked rendering that this process isn't rendering was cut off by a restart. */
+export async function readVersionSet(id: string): Promise<VersionSet | undefined> {
+  if (!/^set_[0-9a-f]{8}$/.test(id)) return undefined;
+  const saved = await readJson<VersionSet | null>(setFile(path.join(paths.versions, id)), null);
+  if (!saved) return undefined;
+  // Sets made before rendering moved to the background have no status or specs.
+  const set: VersionSet = { ...saved, status: saved.status ?? "ready", specs: saved.specs ?? saved.versions.map((v) => v.spec) };
+  if (set.status === "rendering" && !rendering.has(id)) {
+    return { ...set, status: "failed", error: "Trialpilot stopped before these versions were finished. Make them again." };
+  }
+  return set;
+}
+
+/** Every saved set, newest first. */
+export async function listVersionSets(): Promise<VersionSet[]> {
+  const names = await fs.readdir(paths.versions).catch(() => [] as string[]);
+  const sets = await Promise.all(names.map((name) => readVersionSet(name).catch(() => undefined)));
+  return sets.filter((s): s is VersionSet => !!s).sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
