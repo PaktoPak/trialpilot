@@ -6,14 +6,17 @@ import path from "node:path";
 import test from "node:test";
 import { makeSource } from "./helpers.mjs";
 
-// Config is read on import, so the data folder has to be set first. FFmpeg comes from the
-// developer's own Trialpilot folder when there is one.
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "trialpilot-test-"));
+// Config is read on import, so the data folder has to be set first. Its name has the characters
+// FFmpeg's filters treat specially (Windows allows no colon). FFmpeg comes from the developer's own
+// Trialpilot folder when there is one.
+const awkward = process.platform === "win32" ? "it's [a], b;c" : "it's [a], b;c:d";
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `trialpilot-test-${awkward}-`));
 process.env.TRIALPILOT_DATA_DIR = dataDir;
 const ownFfmpeg = path.join(os.homedir(), "Trialpilot", "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
 if (!process.env.TRIALPILOT_FFMPEG_PATH && fs.existsSync(ownFfmpeg)) process.env.TRIALPILOT_FFMPEG_PATH = ownFfmpeg;
 
 const { buildCommand, checkOutput, describeSpec, makeVersions, outputSize, stripTimes, validateSpec, VersionError } = await import("../dist/video/versions.js");
+const { hdrKind, hdrToSdr } = await import("../dist/video/hdr.js");
 const { probe, resolveFfmpeg } = await import("../dist/ffmpeg.js");
 const { resolveBrowser } = await import("../dist/browser.js");
 
@@ -73,6 +76,35 @@ test("sound: silent sources stay silent, a track is mixed in, and metadata is dr
   assert.ok(mixed.args.includes("-map_metadata"));
 });
 
+test("HDR video is told apart by how it stores brightness", () => {
+  assert.equal(hdrKind({ color_transfer: "arib-std-b67" }), "hlg");
+  assert.equal(hdrKind({ color_transfer: "smpte2084" }), "pq");
+  assert.equal(hdrKind({ color_transfer: "bt709" }), undefined);
+  assert.equal(hdrKind({}), undefined);
+});
+
+test("HDR's reference levels land where SDR puts them", () => {
+  const grey = (kind, v) => hdrToSdr(kind, [v, v, v])[0];
+  assert.equal(grey("hlg", 0), 0);
+  assert.equal(grey("hlg", 1), 1);
+  // An 18% grey card is at 38% in both HLG and PQ (26 cd/m²), and at about 41% in SDR.
+  for (const kind of ["hlg", "pq"]) assert.ok(Math.abs(grey(kind, 0.38) - 0.41) < 0.01, `${kind}: ${grey(kind, 0.38)}`);
+  // Reference white (HLG 75%, PQ 58%: 203 cd/m²) sits just below SDR white, leaving room for highlights.
+  for (const [kind, v] of [["hlg", 0.75], ["pq", 0.5806]]) assert.ok(grey(kind, v) > 0.92 && grey(kind, v) < 0.96, `${kind}: ${grey(kind, v)}`);
+  // A green BT.709 can't show stays green, within range.
+  const [r, g, b] = hdrToSdr("hlg", [0, 0.75, 0]);
+  assert.ok([r, g, b].every((v) => v >= 0 && v <= 1) && g > r && g > b);
+});
+
+test("HDR turns into normal colour right after resizing, through a colour table whose path is escaped", () => {
+  const hdr = { ...info, pix_fmt: "yuv420p10le", color_transfer: "arib-std-b67" };
+  assert.throws(() => buildCommand({}, hdr, io), /colour table/);
+  const graph = graphOf(buildCommand({ look: { contrast: 1.1 } }, hdr, { ...io, lut: "/data/it's [a], b;c:d/hdr-to-sdr.cube" }));
+  assert.ok(graph.includes(String.raw`scale=1080:1920:flags=lanczos:in_color_matrix=bt2020,setsar=1,format=gbrp16le,lut3d=file=/data/it\\\'s \[a\]\, b\;c\\:d/hdr-to-sdr.cube:interp=tetrahedral`), graph);
+  assert.ok(graph.indexOf("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709") < graph.indexOf("eq=contrast"));
+  assert.doesNotMatch(graphOf(buildCommand({}, info, { ...io, lut: "unused.cube" })), /lut3d|bt2020/);
+});
+
 test("asks that are out of range are refused in plain words", () => {
   const refuse = (spec, pattern) => assert.throws(() => validateSpec(spec, info, "Version 1"), (e) => e instanceof VersionError && pattern.test(e.message));
   refuse({ speed: 1.2 }, /speed has to be between 0\.9 and 1\.1/);
@@ -106,6 +138,7 @@ test("checkOutput flags files Instagram would reject", () => {
   assert.match(checkOutput({ ...info, video_codec: "hevc" }, plan).join(), /not H\.264/);
   assert.match(checkOutput({ ...info, duration: 7 }, plan).join(), /7\.0 s long/);
   assert.match(checkOutput({ ...info, width: 2160, height: 3840 }, plan).join(), /bigger than 1080×1920/);
+  assert.match(checkOutput({ ...info, color_transfer: "arib-std-b67" }, plan).join(), /still HDR/);
 });
 
 /** How much a region of one frame differs between two videos at the same moment, 0 to 255. */
@@ -115,9 +148,10 @@ function regionDifference(a, b, t, crop) {
   return out[0];
 }
 
-/** Average of a region of one frame, per channel. */
+/** Average of a region of one frame, per channel. Leave out t for an image, which FFmpeg can't seek in. */
 function regionColour(video, t, crop) {
-  const out = execFileSync(tools.ffmpeg, ["-v", "error", "-ss", String(t), "-i", video, "-frames:v", "1", "-vf", `crop=${crop},scale=1:1`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
+  const seek = t === undefined ? [] : ["-ss", String(t)];
+  const out = execFileSync(tools.ffmpeg, ["-v", "error", ...seek, "-i", video, "-frames:v", "1", "-vf", `crop=${crop},scale=1:1`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
   return [...out];
 }
 
@@ -155,6 +189,24 @@ test("renders versions that Instagram accepts, with a strip of frames each", { s
   // Below 6500 K is warmer: more red than blue.
   const [red, , blue] = regionColour(set.versions[2].file, 2, "40:40:250:460");
   assert.ok(red > blue, `warmer colour: red ${red}, blue ${blue}`);
+});
+
+test("an HDR video's versions and strip come out in normal colour", { skip: !tools && "needs FFmpeg" }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "trialpilot-media-"));
+  const source = path.join(dir, "hdr.mkv");
+  // HDR's reference white (HLG 75%), tagged the way an iPhone tags its videos.
+  execFileSync(tools.ffmpeg, ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0xBFBFBF:s=540x960:r=30:d=4",
+    "-vf", "format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc", "-c:v", "ffv1", source]);
+  const set = await makeVersions(source, [{ speed: 1.05 }], { preset: "ultrafast" });
+
+  assert.equal(hdrKind(set.source_info), "hlg");
+  assert.equal((await probe(tools, set.versions[0].file)).color_transfer, "bt709");
+  const expected = hdrToSdr("hlg", [191 / 255, 191 / 255, 191 / 255])[0] * 255;
+  const [version] = regionColour(set.versions[0].file, 1, "40:40:250:460");
+  const [strip] = regionColour(set.original_strip, undefined, "20:20:80:170");
+  assert.ok(Math.abs(version - expected) <= 4, `version grey ${version}, expected about ${Math.round(expected)}`);
+  assert.ok(Math.abs(strip - expected) <= 6, `strip grey ${strip}, expected about ${Math.round(expected)}`);
+  assert.ok(!fs.existsSync(path.join(set.folder, "hdr-to-sdr.cube")), "the colour table is removed afterwards");
 });
 
 test("refuses a version that repeats an earlier one", { skip: canRender }, async () => {

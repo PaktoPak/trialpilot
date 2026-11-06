@@ -9,6 +9,7 @@ import { ffmpegDownload, ffmpegVersion, installFfmpeg, NoFfmpegError, resolveFfm
 import { getConnect, startConnect, verifyAccount } from "./instagram/connect.js";
 import { getAccount, getAccounts, logAction, removeAccount, type Account } from "./store.js";
 import { ensureDir, errorMessage, localTime, log, mapLimit, normalizeUsername, UserError } from "./util.js";
+import { hdrKind } from "./video/hdr.js";
 import { LIMITS, listVersionSets, prepareVersions, readVersionSet, renderVersions, versionsDone, type VersionSet, type VersionSpec } from "./video/versions.js";
 import { listVideos, resolveVideo } from "./videos.js";
 
@@ -218,7 +219,7 @@ server.registerTool(
   {
     title: "Make versions of a video",
     description:
-      "Makes 1 to 5 lightly edited versions of one video to test as trial reels. Change one thing per version so the results show which change worked. Each version is an H.264 MP4 of at most 1080×1920, without the original's metadata. Checks everything first and refuses in plain words; then renders in the background and returns a set_id right away. Call get_versions with it to see each version's strip of frames (usually ready in a minute or two).",
+      "Makes 1 to 5 lightly edited versions of one video to test as trial reels. Change one thing per version so the results show which change worked. Each version is an H.264 MP4 of at most 1080×1920, without the original's metadata. HDR videos (most iPhone videos are) come out in normal colour. Checks everything first and refuses in plain words; then renders in the background and returns a set_id right away. Call get_versions with it to see each version's strip of frames (usually ready in a minute or two).",
     inputSchema: {
       video: z.string().describe("A full path, or the name of a file in the videos folder."),
       versions: z.array(versionSchema).min(1).max(LIMITS.versions),
@@ -271,7 +272,7 @@ server.registerTool(
       const content: Content[] = [
         {
           type: "text",
-          text: `${describeSet(set)}\nFolder: ${set.folder}\nEach strip shows six moments from start to end, more of them from the opening, where a hook shows.\n\nOriginal: ${width}×${height}, ${duration.toFixed(1)} s`,
+          text: `${describeSet(set)}\nFolder: ${set.folder}\nEach strip shows six moments from start to end, more of them from the opening, where a hook shows.\n\nOriginal: ${width}×${height}, ${duration.toFixed(1)} s${hdrKind(set.source_info) ? ", HDR (its versions and this strip are in normal colour)" : ""}`,
         },
         await image(set.original_strip),
       ];

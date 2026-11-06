@@ -9,7 +9,7 @@ Trialpilot is free and open source. It runs on your computer and works through i
 ## What works so far
 
 - **Connect accounts.** A browser window opens on Instagram's sign-in page and you sign in yourself. Trialpilot never sees your password.
-- **Make versions.** Up to 5 versions of one video, each changing one thing: a hook line over the first seconds, a different opening, speed, zoom, colour and grain, mirroring, or music you have the rights to. Each comes with a strip of frames for comparing them at a glance, and every file is checked to be one Instagram accepts.
+- **Make versions.** Up to 5 versions of one video, each changing one thing: a hook line over the first seconds, a different opening, speed, zoom, colour and grain, mirroring, or music you have the rights to. Each comes with a strip of frames for comparing them at a glance, and every file is checked to be one Instagram accepts. HDR videos, which most iPhones record, come out in normal colour, so they don't look dark and grey on Instagram.
 - **FFmpeg.** Making versions needs FFmpeg. If your computer doesn't have it, Trialpilot downloads it once after you say yes, from ffmpeg.martin-riedl.de on a Mac or gyan.dev on Windows. FFmpeg is GPL software and isn't included in Trialpilot.
 
 ## Try it

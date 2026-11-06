@@ -157,6 +157,8 @@ export interface VideoInfo {
   fps: number;
   video_codec: string;
   pix_fmt?: string;
+  /** How brightness is stored; arib-std-b67 (HLG) and smpte2084 (PQ) are HDR. */
+  color_transfer?: string;
   has_audio: boolean;
   audio_codec?: string;
   size_bytes: number;
@@ -187,6 +189,7 @@ export async function probe(tools: FfmpegTools, file: string): Promise<VideoInfo
     fps: rate(video.avg_frame_rate) || rate(video.r_frame_rate),
     video_codec: video.codec_name,
     pix_fmt: video.pix_fmt,
+    color_transfer: video.color_transfer,
     has_audio: !!audio,
     audio_codec: audio?.codec_name,
     size_bytes: Number(out.format?.size ?? 0),

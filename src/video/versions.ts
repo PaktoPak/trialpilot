@@ -3,6 +3,7 @@ import path from "node:path";
 import { paths } from "../config.js";
 import { hasAudioTrack, probe, requireFfmpeg, runTool, type FfmpegTools, type VideoInfo } from "../ffmpeg.js";
 import { ensureDir, errorMessage, mapLimit, newId, readJson, UserError, writeJsonAtomic } from "../util.js";
+import { hdrKind, writeHdrLut } from "./hdr.js";
 import { renderHookImages, type HookImage, type HookPosition, type HookStyle } from "./hook.js";
 
 export class VersionError extends UserError {}
@@ -52,6 +53,10 @@ const NEUTRAL_TEMPERATURE = 6500;
 const n = (x: number) => String(Math.round(x * 1000) / 1000);
 const even = (x: number) => Math.max(2, Math.floor(x / 2) * 2);
 const within = (v: number | undefined, [lo, hi]: readonly [number, number]) => v === undefined || (Number.isFinite(v) && v >= lo && v <= hi);
+// A file path as a filter option: escaped for the option, then again for the filtergraph.
+const filterPath = (p: string) => p.replace(/[\\':]/g, "\\$&").replace(/[\\'[\],;]/g, "\\$&");
+// HDR frames, already turned into BT.2020 RGB, through the colour table from writeHdrLut.
+const throughLut = (lut: string) => ["format=gbrp16le", `lut3d=file=${filterPath(lut)}:interp=tetrahedral`];
 
 function check(ok: boolean, message: string): asserts ok {
   if (!ok) throw new VersionError(message);
@@ -128,8 +133,13 @@ export interface RenderPlan {
   has_audio: boolean;
 }
 
-/** The FFmpeg command for one version: H.264/AAC MP4, at most 1080×1920, no metadata from the source. */
-export function buildCommand(spec: VersionSpec, info: VideoInfo, io: { input: string; output: string; hookImage?: string; preset?: string }): RenderPlan {
+/**
+ * The FFmpeg command for one version: H.264/AAC MP4, at most 1080×1920, no metadata from the source.
+ * An HDR source also needs io.lut, its colour table from writeHdrLut, to come out in normal colour.
+ */
+export function buildCommand(spec: VersionSpec, info: VideoInfo, io: { input: string; output: string; hookImage?: string; lut?: string; preset?: string }): RenderPlan {
+  const hdr = hdrKind(info);
+  if (hdr && !io.lut) throw new Error("An HDR source needs its colour table.");
   const { width, height } = outputSize(info.width, info.height);
   const fps = Math.min(60, Math.round(info.fps) || 30);
   const duration = expectedDuration(spec, info);
@@ -167,7 +177,11 @@ export function buildCommand(spec: VersionSpec, info: VideoInfo, io: { input: st
 
   const chain: string[] = [];
   if (spec.zoom && spec.zoom > 1) chain.push(`crop=w=trunc(iw/${n(spec.zoom)}/2)*2:h=trunc(ih/${n(spec.zoom)}/2)*2:x=(iw-ow)/2:y=0`);
-  chain.push(`scale=${width}:${height}:flags=lanczos`, "setsar=1");
+  chain.push(`scale=${width}:${height}:flags=lanczos${hdr ? ":in_color_matrix=bt2020" : ""}`, "setsar=1");
+  // HDR turns into normal colour right after resizing, so every later step works in normal colour.
+  if (hdr && io.lut) {
+    chain.push(...throughLut(io.lut), "scale=out_color_matrix=bt709:out_range=tv", "format=yuv420p", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709");
+  }
   const look = spec.look ?? {};
   if (look.contrast !== undefined && look.contrast !== 1) chain.push(`eq=contrast=${n(look.contrast)}`);
   if (look.temperature !== undefined && look.temperature !== NEUTRAL_TEMPERATURE) chain.push(`colortemperature=temperature=${Math.round(look.temperature)}`);
@@ -221,6 +235,7 @@ export function checkOutput(out: VideoInfo, plan: RenderPlan): string[] {
   const problems: string[] = [];
   if (out.video_codec !== "h264") problems.push(`its video is ${out.video_codec}, not H.264`);
   if (out.pix_fmt !== "yuv420p") problems.push(`its pixel format is ${out.pix_fmt}`);
+  if (hdrKind(out)) problems.push("its colours are still HDR");
   if (out.width !== plan.width || out.height !== plan.height) problems.push(`it is ${out.width}×${out.height} instead of ${plan.width}×${plan.height}`);
   if (out.width > LIMITS.maxWidth || out.height > LIMITS.maxHeight) problems.push("it is bigger than 1080×1920");
   if (Math.abs(out.duration - plan.duration) > Math.max(0.5, plan.duration * 0.03)) {
@@ -240,12 +255,13 @@ export function stripTimes(duration: number): number[] {
   return [0.5, 1.5, 3, ...[0, 1, 2].map((i) => 5 + (i * (duration - 5.3)) / 2)];
 }
 
-/** A row of frames from the video, for reviewing versions side by side. */
-export async function makeStrip(tools: FfmpegTools, video: string, duration: number, file: string): Promise<void> {
+/** A row of frames from the video, for reviewing versions side by side. An HDR video needs its colour table. */
+export async function makeStrip(tools: FfmpegTools, video: string, duration: number, file: string, lut?: string): Promise<void> {
   const times = stripTimes(duration);
   const args = ["-hide_banner", "-loglevel", "error", "-y"];
   for (const t of times) args.push("-ss", n(t), "-i", video);
-  const scaled = times.map((_, i) => `[${i}:v]scale=-2:360,setsar=1[f${i}]`);
+  const toSdr = lut ? `:in_color_matrix=bt2020,${throughLut(lut).join(",")}` : "";
+  const scaled = times.map((_, i) => `[${i}:v]scale=-2:360${toSdr},setsar=1[f${i}]`);
   const joined = `${times.map((_, i) => `[f${i}]`).join("")}hstack=inputs=${times.length}[strip]`;
   args.push("-filter_complex", [...scaled, joined].join(";"), "-map", "[strip]", "-frames:v", "1", "-q:v", "4", file);
   await runTool(tools.ffmpeg, args, 120_000);
@@ -325,18 +341,21 @@ export async function renderVersions(set: VersionSet, opts: { preset?: string; p
     const tools = requireFfmpeg();
     const { folder, specs, source_info: info } = set;
     const size = outputSize(info.width, info.height);
+    const hdr = hdrKind(info);
+    const lut = hdr ? path.join(folder, "hdr-to-sdr.cube") : undefined;
+    if (hdr && lut) await writeHdrLut(hdr, lut);
     const hookFile = (i: number) => path.join(folder, `v${i + 1}-hook.png`);
     const hooks: HookImage[] = specs.flatMap((spec, i) =>
       spec.hook ? [{ text: spec.hook.text, style: spec.hook.style ?? "box", position: spec.hook.position ?? "top", ...size, file: hookFile(i) }] : [],
     );
     await renderHookImages(hooks);
-    await makeStrip(tools, set.source, info.duration, set.original_strip);
+    await makeStrip(tools, set.source, info.duration, set.original_strip, lut);
 
     // libx264 already uses every core, so two at a time is enough.
     const versions = await mapLimit(specs, opts.parallel ?? 2, async (spec, i): Promise<Version> => {
       const vid = `v${i + 1}`;
       const file = path.join(folder, `${vid}.mp4`);
-      const plan = buildCommand(spec, info, { input: set.source, output: file, hookImage: spec.hook ? hookFile(i) : undefined, preset: opts.preset });
+      const plan = buildCommand(spec, info, { input: set.source, output: file, hookImage: spec.hook ? hookFile(i) : undefined, lut, preset: opts.preset });
       await runTool(tools.ffmpeg, plan.args);
       const out = await probe(tools, file);
       const problems = checkOutput(out, plan);
@@ -346,6 +365,8 @@ export async function renderVersions(set: VersionSet, opts: { preset?: string; p
       rendering.set(set.id, (rendering.get(set.id) ?? 0) + 1);
       return { id: vid, spec, changes: describeSpec(spec), file, strip, duration: round(out.duration), width: out.width, height: out.height, size_mb: round(out.size_bytes / 1e6) };
     });
+    // The colour table is only needed while rendering.
+    if (lut) await fs.rm(lut, { force: true });
 
     const ready: VersionSet = { ...set, status: "ready", versions, finished_at: new Date().toISOString() };
     await writeJsonAtomic(setFile(folder), ready);
