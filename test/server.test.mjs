@@ -27,8 +27,9 @@ after(async () => {
 test("offers every tool, and the manifest lists the same ones", async () => {
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
   assert.deepEqual(names, [
-    "check_account", "check_connection", "connect_account", "disconnect_account", "get_setup_status", "get_versions",
-    "install_browser", "install_ffmpeg", "list_accounts", "list_videos", "make_versions",
+    "cancel_trial", "check_account", "check_connection", "connect_account", "disconnect_account", "get_setup_status", "get_trial_status",
+    "get_versions", "install_browser", "install_ffmpeg", "list_accounts", "list_videos", "make_versions", "preview_trial",
+    "resume_trial_posting", "start_trial", "test_trial",
   ]);
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.deepEqual(manifest.tools.map((t) => t.name).sort(), names);

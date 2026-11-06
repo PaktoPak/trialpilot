@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "trialpilot",
   "display_name": "Trialpilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Test a few versions of a video as Instagram trial reels from Claude.",
-  "long_description": "Trialpilot turns one video into a few lightly edited versions (a new hook line, a different opening, speed, zoom, look or sound) and shows you a strip of frames from each. Accounts sign in once each in their own browser window, and everything stays on your computer. Posting the versions as trial reels and comparing how they did is still being built. Trialpilot works through instagram.com rather than an official Instagram API.",
+  "long_description": "Trialpilot turns one video into a few lightly edited versions (a new hook line, a different opening, speed, zoom, look or sound) and posts each one as an Instagram trial reel. Trial reels are shown to people who don't follow you yet, so you can see which version works before your followers see any of them. Nothing goes out without your yes, and each account signs in once in its own browser window. Everything runs on your computer through instagram.com rather than an official Instagram API.",
   "author": {
     "name": "Trialpilot contributors"
   },
@@ -61,6 +61,30 @@
     {
       "name": "get_versions",
       "description": "See each version's strip of frames and what it changes."
+    },
+    {
+      "name": "preview_trial",
+      "description": "Check which versions go out as trial reels, with their captions and times."
+    },
+    {
+      "name": "start_trial",
+      "description": "Post the versions as trial reels, after your yes."
+    },
+    {
+      "name": "test_trial",
+      "description": "Try every posting step, Share included, with nothing posted."
+    },
+    {
+      "name": "get_trial_status",
+      "description": "See where each trial reel stands, with links."
+    },
+    {
+      "name": "cancel_trial",
+      "description": "Cancel trial reels that haven't gone out yet."
+    },
+    {
+      "name": "resume_trial_posting",
+      "description": "Go on posting after Trialpilot stopped to be safe."
     },
     {
       "name": "get_setup_status",

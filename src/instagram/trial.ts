@@ -13,6 +13,8 @@ export interface TrialSignals {
   source?: string;
   /** Codes of posts those responses marked is_trial_reel. */
   trial_media: string[];
+  /** Codes of posts those responses marked as not trial reels. */
+  public_media: string[];
 }
 
 function operationName(response: Response): string | undefined {
@@ -38,7 +40,7 @@ function jsonChunks(body: string): unknown[] {
 
 /** Listens to what instagram.com fetches for itself and notes the trial reel fields. Sends no requests of its own. */
 export function watchTrialSignals(page: Page): TrialSignals {
-  const signals: TrialSignals = { trial_media: [] };
+  const signals: TrialSignals = { trial_media: [], public_media: [] };
 
   const walk = (node: any, source: string): void => {
     if (!node || typeof node !== "object") return;
@@ -51,8 +53,9 @@ export function watchTrialSignals(page: Page): TrialSignals {
       if (typeof node.is_private === "boolean") signals.is_private = node.is_private;
       signals.source = source;
     }
-    if (node.is_trial_reel === true && typeof node.code === "string" && !signals.trial_media.includes(node.code)) {
-      signals.trial_media.push(node.code);
+    if (typeof node.is_trial_reel === "boolean" && typeof node.code === "string") {
+      const list = node.is_trial_reel ? signals.trial_media : signals.public_media;
+      if (!list.includes(node.code)) list.push(node.code);
     }
     for (const value of Object.values(node)) walk(value, source);
   };

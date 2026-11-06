@@ -7,13 +7,14 @@ import { BrowserBusyError, installChromium, NoBrowserError, resolveBrowser } fro
 import { paths } from "./config.js";
 import { ffmpegDownload, ffmpegVersion, installFfmpeg, NoFfmpegError, resolveFfmpeg } from "./ffmpeg.js";
 import { getConnect, startConnect, verifyAccount } from "./instagram/connect.js";
-import { getAccount, getAccounts, logAction, removeAccount, type Account } from "./store.js";
+import { getAccount, getAccounts, getTrials, logAction, removeAccount, type Account, type TrialPost, type TrialStatus } from "./store.js";
+import { cancelTrials, createTrialPreview, resumeTrialPosting, runDueTrials, SPACING, trialsFromPreview } from "./trials.js";
 import { ensureDir, errorMessage, localTime, log, mapLimit, normalizeUsername, UserError } from "./util.js";
 import { hdrKind } from "./video/hdr.js";
 import { LIMITS, listVersionSets, prepareVersions, readVersionSet, renderVersions, versionsDone, type VersionSet, type VersionSpec } from "./video/versions.js";
 import { listVideos, resolveVideo } from "./videos.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const INSTRUCTIONS = `Trialpilot tests several versions of one video as Instagram trial reels, through instagram.com in a local browser window with one saved sign-in per account.
 - Sign-in: the user signs in themselves in the window connect_account opens. Never ask for passwords or security codes in chat.
@@ -21,7 +22,12 @@ const INSTRUCTIONS = `Trialpilot tests several versions of one video as Instagra
 - Versions: make 2 to 5, each changing one thing (hook, opening, speed, zoom, look, mirror or sound), so the results show which change worked. Then go through every version with the user from get_versions: what it changes, how its strip of frames looks, and where its file is, so they can watch it.
 - Music: only add a track the user owns or has the rights to use. Never make versions to get a song past Instagram's copyright checks.
 - FFmpeg: make_versions needs it. If it's missing, ask the user before install_ffmpeg, saying what it downloads, from where and how big.
-- Trial reel posting isn't built yet: nothing in Trialpilot posts to Instagram.`;
+- Trial reels: preview_trial checks which versions go out on which account, with which captions and when, and returns a preview. Show the user all of it and get a clear yes before start_trial with user_confirmed true. Each preview can be started once.
+- Captions: give every version the same caption unless the user wants to test captions, so the edit is the only difference.
+- The first time on an account, suggest test_trial: it goes through every step, Share included, and stops the publish request, so nothing is posted.
+- Trialpilot posts each version itself at its time, 30 minutes apart by default, so Claude Desktop has to stay open until the last one has gone out.
+- If a reel goes out as a normal reel, or Trialpilot can't confirm it's a trial reel, it stops trial posting on that account and shows a notification. Tell the user straight away, with the link. Call resume_trial_posting only after the user has checked that reel on Instagram and says to go on.
+- Times: pass ISO 8601 with the user's timezone offset, and say times back to the user in their local time.`;
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type ToolResult = { content: Content[]; isError?: boolean };
@@ -43,7 +49,8 @@ function describeAccount(a: Account): string {
   const kind = a.account_type === "unknown" ? "account type unknown" : `${a.account_type} account`;
   const visibility = a.is_private === undefined ? "" : a.is_private ? ", private (trial reels need a public account)" : ", public";
   const status = a.status === "connected" ? "signed in" : "needs to sign in again (connect_account with this username)";
-  return `@${a.username}${a.full_name ? ` (${a.full_name})` : ""}: ${kind}${visibility}; ${status}`;
+  const stopped = a.trial_stop ? `; trial posting stopped on ${localTime(a.trial_stop.at)}: ${a.trial_stop.reason}` : "";
+  return `@${a.username}${a.full_name ? ` (${a.full_name})` : ""}: ${kind}${visibility}; ${status}${stopped}`;
 }
 
 const server = new McpServer({ name: "trialpilot", version: VERSION }, { instructions: INSTRUCTIONS });
@@ -284,6 +291,192 @@ server.registerTool(
     }),
 );
 
+// Trial reels
+
+const TRIAL_MEANING: Record<TrialStatus, string> = {
+  scheduled: "waiting for its time",
+  posting: "going out now",
+  posted: "live as a trial reel: shown to people who don't follow the account, not on its profile grid",
+  tested: "test run finished; nothing was posted",
+  failed: "didn't go out",
+  needs_check: "may be up; check the profile and its trial reels before anything else",
+  went_public: "went out as a normal reel, so trial posting on this account stopped",
+  missed: "its time passed while Trialpilot wasn't running, so it didn't go out",
+  cancelled: "didn't go out",
+};
+
+function describeTrial(t: TrialPost): string {
+  const when = t.type === "test" ? "test run" : `for ${localTime(t.run_at)}`;
+  const caption = t.caption ? JSON.stringify(t.caption.length > 120 ? `${t.caption.slice(0, 117)}...` : t.caption) : "(none)";
+  const lines = [`${t.id}: @${t.account} ${t.version}, ${when}: ${t.status} (${TRIAL_MEANING[t.status]})`, `  caption: ${caption}`];
+  if (t.result?.url) lines.push(`  link: ${t.result.url}`);
+  if (t.result?.sent) lines.push(`  trial setting sent: ${Object.entries(t.result.sent).map(([k, v]) => `${k} ${v}`).join(", ")}`);
+  if (t.note) lines.push(`  note: ${t.note}`);
+  if (t.result?.note) lines.push(`  note: ${t.result.note}`);
+  if (t.error) lines.push(`  problem at step "${t.error.step}": ${t.error.message}${t.error.screenshot ? ` (screenshot: ${t.error.screenshot})` : ""}`);
+  return lines.join("\n");
+}
+
+server.registerTool(
+  "preview_trial",
+  {
+    title: "Preview a trial",
+    description:
+      "Checks versions from make_versions going out as trial reels on one account: each version with its caption and time (the first right after the user's yes unless start_at is given, then one every spacing_minutes), the account and the daily limit. Returns a preview_id. Show the user the whole preview and get a clear yes before start_trial.",
+    inputSchema: {
+      set_id: z.string(),
+      username: z.string().describe("The account to post from."),
+      versions: z
+        .array(
+          z
+            .object({
+              version: z.string().describe("v1, v2 and so on, from get_versions."),
+              caption: z.string().default("").describe("The caption, hashtags included. Line breaks and emoji are kept."),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(LIMITS.versions)
+        .describe("In the order they go out."),
+      start_at: z.string().optional().describe("When the first goes out: ISO 8601 with the user's timezone offset. Leave out for right after the user's yes."),
+      spacing_minutes: z.number().int().optional().describe(`Minutes between versions, ${SPACING.min} to ${SPACING.max}; ${SPACING.default} if left out.`),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async (request) =>
+    run(async () => {
+      const preview = await createTrialPreview(request);
+      const last = preview.items[preview.items.length - 1];
+      const blocks = preview.items.flatMap((item, i) => [
+        "",
+        `${i + 1}. ${item.version}: ${item.changes}`,
+        `File: ${item.file}`,
+        "Caption:",
+        item.caption || "(none)",
+        `When: ${preview.starts_now ? (i === 0 ? "right after the user's yes" : `${i * preview.spacing_minutes} minutes after the first`) : localTime(item.run_at)}`,
+      ]);
+      const span = ((preview.items.length - 1) * preview.spacing_minutes) / 60;
+      return ok(
+        [
+          `preview_id: ${preview.id} (valid for 30 minutes)`,
+          `@${preview.account}: ${preview.items.length} trial reel${preview.items.length > 1 ? "s" : ""} from ${preview.set_id}. Trial reels are shown to people who don't follow the account first. They don't appear on its profile grid or in its followers' feeds, and the user can share the best one to followers later.`,
+          ...blocks,
+          "",
+          preview.items.length > 1
+            ? `Trialpilot posts each one itself at its time, so Claude Desktop has to stay open until the last one${preview.starts_now ? `, about ${span >= 1 ? `${span} hour${span === 1 ? "" : "s"}` : `${span * 60} minutes`} after the first` : ` (${localTime(last.run_at)})`}.`
+            : "Trialpilot posts it itself, so Claude Desktop has to be open at that time.",
+          "Show this preview to the user and ask for a clear yes. Then call start_trial with this preview_id and user_confirmed true. To try the steps first with nothing posted, call test_trial.",
+        ].join("\n"),
+      );
+    }),
+);
+
+server.registerTool(
+  "start_trial",
+  {
+    title: "Start a trial",
+    description:
+      "Posts the versions in a preview as trial reels, each at its time. Only call this after showing the user the preview from preview_trial and getting an explicit yes in this conversation; set user_confirmed true only then.",
+    inputSchema: { preview_id: z.string(), user_confirmed: z.boolean() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ preview_id, user_confirmed }) =>
+    run(async () => {
+      if (!user_confirmed) throw new UserError("Not started. Show the user the preview, get a clear yes, then call again with user_confirmed true.");
+      const { batch_id, trials } = await trialsFromPreview(preview_id, "post");
+      void runDueTrials();
+      const last = trials[trials.length - 1];
+      return ok(
+        [
+          `batch_id: ${batch_id}. ${trials.length} trial reel${trials.length > 1 ? "s" : ""} on @${trials[0].account}:`,
+          ...trials.map((t) => `- ${t.version} (${t.id}): ${Date.parse(t.run_at) <= Date.now() + 1000 ? "now" : localTime(t.run_at)}`),
+          `A browser window opens and posts each one at its time, so Claude Desktop has to stay open until ${localTime(last.run_at)}. Check get_trial_status with the batch_id.`,
+        ].join("\n"),
+      );
+    }),
+);
+
+server.registerTool(
+  "test_trial",
+  {
+    title: "Test a trial without posting",
+    description:
+      "Runs every posting step for the first version in a preview, Share included, and stops the publish request, so nothing is posted. Shows the trial setting the request carried. The preview stays valid for start_trial. Check the result with get_trial_status.",
+    inputSchema: { preview_id: z.string() },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ preview_id }) =>
+    run(async () => {
+      const { trials } = await trialsFromPreview(preview_id, "test");
+      void runDueTrials();
+      const [t] = trials;
+      return ok(
+        `Test run started on @${t.account} with ${t.version} (${t.id}). A browser window adds the video and caption and clicks Share, and Trialpilot stops the publish request, so nothing is posted. Check get_trial_status in a couple of minutes. The preview stays valid for start_trial.`,
+      );
+    }),
+);
+
+server.registerTool(
+  "get_trial_status",
+  {
+    title: "Trial status",
+    description:
+      "Shows where trial reels stand: every one in a batch with batch_id, one with trial_id, or the most recent ones with neither. Includes links, the trial setting each publish request carried, and screenshots.",
+    inputSchema: { batch_id: z.string().optional(), trial_id: z.string().optional() },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ batch_id, trial_id }) =>
+    run(async () => {
+      const all = await getTrials();
+      const trials = batch_id ? all.filter((t) => t.batch_id === batch_id) : trial_id ? all.filter((t) => t.id === trial_id) : all.slice(-20);
+      if (!trials.length) {
+        if (batch_id || trial_id) throw new UserError(`There's no trial with id ${batch_id ?? trial_id}.`);
+        return ok("No trial reels yet.");
+      }
+      const stopped = (await getAccounts()).filter((a) => a.trial_stop && trials.some((t) => t.account === a.username));
+      const banner = stopped.map((a) => `STOPPED: trial posting on @${a.username} is stopped. ${a.trial_stop!.reason} Tell the user now.`);
+      const content: Content[] = [{ type: "text", text: [...banner, ...trials.map(describeTrial)].join("\n") }];
+      for (const t of trials.slice(-4)) {
+        const shot = t.result?.screenshot ?? t.error?.screenshot;
+        const data = shot ? await fs.readFile(shot).catch(() => null) : null;
+        if (data) content.push({ type: "image", data: data.toString("base64"), mimeType: "image/jpeg" });
+      }
+      return { content };
+    }),
+);
+
+server.registerTool(
+  "cancel_trial",
+  {
+    title: "Cancel a trial",
+    description: "Cancels the trial reels in a batch that haven't gone out yet. Confirm with the user first.",
+    inputSchema: { batch_id: z.string() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ batch_id }) =>
+    run(async () => {
+      const cancelled = await cancelTrials(batch_id);
+      return ok(cancelled.length ? `Cancelled ${cancelled.map((t) => t.version).join(", ")}. Reels already out stay up.` : "Nothing left to cancel: every reel in that batch has already gone out or stopped.");
+    }),
+);
+
+server.registerTool(
+  "resume_trial_posting",
+  {
+    title: "Resume trial posting",
+    description:
+      "Lets trial posting go on on an account after Trialpilot stopped it. Only after the user has checked, on Instagram, the reel that caused the stop and said to go on; set user_confirmed true only then. Trial reels it cancelled stay cancelled.",
+    inputSchema: { username: z.string(), user_confirmed: z.boolean() },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ username, user_confirmed }) =>
+    run(async () => {
+      if (!user_confirmed) throw new UserError("Not resumed. Ask the user to check that reel on Instagram first, and resume only when they say so.");
+      const account = await resumeTrialPosting(username);
+      return ok(`Trial posting on @${account.username} can go on. Run preview_trial again for the versions that didn't go out.`);
+    }),
+);
+
 // Setup
 
 // FFmpeg downloads in the background; this is where it stands, until it's found.
@@ -384,3 +577,10 @@ await ensureDir(paths.videos);
 await server.connect(new StdioServerTransport());
 server.server.onclose = () => process.exit(0);
 log(`started, data folder ${paths.data}`);
+
+// While Claude Desktop is open, the extension posts due trial reels itself.
+const tick = () => {
+  runDueTrials().catch((e) => log("trial run failed:", errorMessage(e)));
+};
+setTimeout(tick, 5_000);
+setInterval(tick, 30_000);

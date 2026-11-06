@@ -11,6 +11,8 @@ export const labels = {
   next: exact(["Next", "Avanti", "Siguiente", "Suivant", "Weiter", "Avançar"]),
   share: exact(["Share", "Condividi", "Compartir", "Partager", "Teilen", "Compartilhar"]),
   ok: exact(["OK"]),
+  shared: /(has been shared|post shared|reel shared|è stato condiviso|se ha compartido|a été partagé|wurde geteilt|foi compartilhad)/i,
+  shareFailed: /(couldn't be shared|could not be shared|wasn't shared|something went wrong|non è stato possibile condividere|si è verificato un problema)/i,
   advancedSettings: exact(["Advanced settings", "Impostazioni avanzate"]),
   // The website's trial switch is "Enable trial reel"; trials it lists are labelled "Trial reel".
   trial: /trial reel|reel di prova/i,

@@ -23,8 +23,19 @@ export const paths = {
   screenshots: path.join(DATA_DIR, "screenshots"),
 };
 
+function envInt(name: string, fallback: number): number {
+  const n = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export const settings = {
   browserPath: envPath("TRIALPILOT_BROWSER_PATH"),
   ffmpegPath: envPath("TRIALPILOT_FFMPEG_PATH"),
   headless: process.env.TRIALPILOT_HEADLESS === "1",
+  maxTrialsPerDay: envInt("TRIALPILOT_MAX_TRIALS_PER_DAY", 5),
+  // A trial reel this late is held for the user instead of going out at an unexpected time.
+  maxLateMinutes: envInt("TRIALPILOT_MAX_LATE_MINUTES", 120),
+  // Test-only: "trial", "public", "unknown", "not_eligible", "fail_before" or "fail_after" replaces Instagram.
+  fakePoster: process.env.TRIALPILOT_FAKE_POSTER,
+  fakeDelayMs: envInt("TRIALPILOT_FAKE_DELAY_MS", 0),
 };

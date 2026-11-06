@@ -123,6 +123,8 @@ export async function openProfile(profileDir: string): Promise<{ context: Browse
       locale: "en-US",
       // Scheduled times are typed into Instagram in the browser's time zone, so pin it to this computer's.
       timezoneId: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      // Requests a service worker sends never reach page.route, and the publish guard has to see every one.
+      serviceWorkers: "block",
       args: ["--no-first-run", "--no-default-browser-check", "--lang=en-US"],
     });
     const page = context.pages()[0] ?? (await context.newPage());
